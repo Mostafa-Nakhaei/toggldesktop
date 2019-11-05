@@ -80,6 +80,7 @@ Context::Context(const std::string &app_name, const std::string &app_version)
 , update_check_disabled_(UPDATE_CHECK_DISABLED)
 , trigger_sync_(false)
 , trigger_push_(false)
+, trigger_full_sync_(false)
 , quit_(false)
 , ui_updater_(this, &Context::uiUpdaterActivity)
 , reminder_(this, &Context::reminderActivity)
@@ -1022,6 +1023,7 @@ void Context::scheduleSync() {
 }
 
 void Context::FullSync() {
+    trigger_full_sync_ = true;
     user_->SetSince(0);
     Sync();
 }
@@ -4442,6 +4444,14 @@ void Context::syncerActivity() {
                     displayError(err);
                 }
 
+                if (trigger_full_sync_) {
+                    err = pullAllPreferencesData(&client);
+                    if (err != noError) {
+                        displayError(err);
+                    }
+                    trigger_full_sync_ = false;
+                }
+
                 setOnline("Data pulled");
 
                 err = pushChanges(&client, &trigger_sync_);
@@ -4612,6 +4622,26 @@ Poco::Logger &Context::logger() const {
     return Poco::Logger::get("context");
 }
 
+error Context::pullAllPreferencesData(
+    TogglClient* toggl_client) {
+    {
+        Poco::Mutex::ScopedLock lock(user_m_);
+        if (!user_) {
+            logger().warning("cannot pull preferences data when logged out");
+            return noError;
+        }
+    }
+    error err = pullWorkspacePreferences(toggl_client);
+    if (err != noError) {
+        return err;
+    }
+    err = pullUserPreferences(toggl_client);
+    if (err != noError) {
+        return err;
+    }
+    return noError;
+}
+
 error Context::pullAllUserData(
     TogglClient *toggl_client) {
 
@@ -4673,10 +4703,6 @@ error Context::pullAllUserData(
         if (err != noError) {
             return err;
         }
-
-        pullWorkspacePreferences(toggl_client);
-
-        pullUserPreferences(toggl_client);
 
         stopwatch.stop();
         std::stringstream ss;
@@ -4997,6 +5023,12 @@ error Context::pushEntries(
         if (resp.err != noError) {
             // if we're able to solve the error
             if ((*it)->ResolveError(resp.body)) {
+                displayError(save(false));
+            }
+
+            // if time entry is locked pull the updated info about locked reports in the workspaces
+            if ((*it)->isLocked(resp.body)) {
+                pullWorkspacePreferences(&toggl_client);
                 displayError(save(false));
             }
 
